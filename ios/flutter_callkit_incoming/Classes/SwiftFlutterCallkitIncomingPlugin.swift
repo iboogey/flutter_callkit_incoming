@@ -205,8 +205,6 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             }
             result(true)
             break
-            result(true)
-            break
         case "activeCalls":
             result(self.callManager.activeCalls())
             break;
@@ -675,7 +673,14 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             return
         }
         self.configureAudioSession()
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(1200)) {
+        // Scope the delayed re-assert to its own call: this closure captures
+        // nothing identifying the call, so it otherwise fires 1.2s later against
+        // whatever `self.data` holds by then -- a newer call during quick
+        // back-to-back calling, or one that has already ended.
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(1200)) { [weak self] in
+            guard let self = self,
+                  let stillLive = self.callManager.callWithUUID(uuid: action.callUUID),
+                  stillLive.hasEnded == false else { return }
             self.configureAudioSession()
         }
 
