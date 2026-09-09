@@ -185,10 +185,26 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
                 self.connectedCall(self.data!)
             }else{
                     if let getArgs = args as? [String: Any] {
-                    self.data = Data(args: getArgs)
-                    self.connectedCall(self.data!)
+                    // `setCallConnected(id)` sends only `{'id': id}`, so
+                    // rebuilding Data from it discards the app's configuration
+                    // and falls back to Call.swift's defaults: audioSessionMode
+                    // "" (-> .default), audioSessionActive and
+                    // configureAudioSession true. The CXAnswerCallAction that
+                    // connectedCall() requests then reconfigures the shared
+                    // AVAudioSession from that, overriding what the app asked
+                    // for. Keep the stored data when the ids match.
+                    let incoming = Data(args: getArgs)
+                    if let existing = self.data,
+                       existing.uuid.caseInsensitiveCompare(incoming.uuid) == .orderedSame {
+                        self.connectedCall(existing)
+                    } else {
+                        self.data = incoming
+                        self.connectedCall(incoming)
+                    }
                     }
             }
+            result(true)
+            break
             result(true)
             break
         case "activeCalls":
