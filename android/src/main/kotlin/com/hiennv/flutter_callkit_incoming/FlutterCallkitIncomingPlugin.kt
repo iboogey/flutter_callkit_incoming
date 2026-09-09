@@ -350,6 +350,22 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
                                 )
                             )
                         }
+                    } else if (context != null) {
+                        // Clean up even with no active record. removeCall()
+                        // drops the record as the last step of the ENDED
+                        // broadcast, so a call whose record is already gone can
+                        // never have its notification cancelled or its service
+                        // stopped -- every later endCall() is a silent no-op
+                        // that still reports success. The notification id
+                        // derives from the call id, so the id alone is enough,
+                        // and the broadcast is idempotent.
+                        Log.d(TAG, "endCall: no active record for ${data.id}, forcing cleanup")
+                        context?.sendBroadcast(
+                            CallkitIncomingBroadcastReceiver.getIntentEnded(
+                                requireNotNull(context),
+                                data.toBundle()
+                            )
+                        )
                     }
                     result.success(true)
                 }
