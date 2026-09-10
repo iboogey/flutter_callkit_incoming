@@ -673,17 +673,16 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             return
         }
         self.configureAudioSession()
-        // Scope the delayed re-assert to its own call: this closure captures
-        // nothing identifying the call, so it otherwise fires 1.2s later against
-        // whatever `self.data` holds by then -- a newer call during quick
-        // back-to-back calling, or one that has already ended.
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(1200)) { [weak self] in
-            guard let self = self,
-                  let stillLive = self.callManager.callWithUUID(uuid: action.callUUID),
-                  stillLive.hasEnded == false else { return }
-            self.configureAudioSession()
-        }
-
+        // No delayed re-configure. The upstream handler re-ran
+        // configureAudioSession() 1200ms after the answer; by then CallKit has
+        // activated the session and, when ICE connects quickly, the app's audio
+        // unit is already running. configureAudioSession() ends with
+        // `setActive(data.audioSessionActive)`, which an app that manages
+        // activation itself sets to false, so the re-run deactivated the live
+        // session underneath the running audio unit. Captured on device: audio
+        // unit started 0.2s after accept, mic samples froze at 0.85s, 42 packets
+        // sent for the rest of the call, nothing decoded. The one call before
+        // activation above is sufficient.
 
         call.hasConnectDidChange = { [weak self] in
             self?.sharedProvider?.reportOutgoingCall(with: call.uuid, connectedAt: call.connectedData)
