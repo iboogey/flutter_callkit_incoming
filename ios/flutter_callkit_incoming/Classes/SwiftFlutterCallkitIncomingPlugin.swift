@@ -310,7 +310,12 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         // the call is successfully reported, matching the fromPushKit variant.
         self.sharedProvider?.reportNewIncomingCall(with: uuid, update: callUpdate) { error in
             if(error == nil) {
-                self.configureAudioSession()
+                // Never reconfigure category/mode under a call that is
+                // already live; the new call gets its configuration when it
+                // is answered (CXAnswerCallAction) or activated.
+                if self.callManager.calls.isEmpty {
+                    self.configureAudioSession()
+                }
                 let call = Call(uuid: uuid, data: data)
                 call.handle = data.handle
                 self.callManager.addCall(call)
@@ -361,7 +366,12 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         
         self.sharedProvider?.reportNewIncomingCall(with: uuid, update: callUpdate) { error in
             if(error == nil) {
-                self.configureAudioSession()
+                // Never reconfigure category/mode under a call that is
+                // already live; the new call gets its configuration when it
+                // is answered (CXAnswerCallAction) or activated.
+                if self.callManager.calls.isEmpty {
+                    self.configureAudioSession()
+                }
                 let call = Call(uuid: uuid, data: data)
                 call.handle = data.handle
                 self.callManager.addCall(call)
@@ -602,7 +612,15 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
                 ])
                 
                 try session.setMode(self.getAudioSessionMode(data?.audioSessionMode))
-                try session.setActive(data?.audioSessionActive ?? true)
+                // Only ever activate here. `audioSessionActive == false` means
+                // the app manages activation itself (CallKit's didActivate /
+                // its own audio engine); calling setActive(false) for it
+                // deactivated a LIVE call's session underneath the running
+                // audio unit (on device: reporting a second incoming call
+                // killed the first call's microphone within 3 s).
+                if data?.audioSessionActive ?? true {
+                    try session.setActive(true)
+                }
                 try session.setPreferredSampleRate(data?.audioSessionPreferredSampleRate ?? 44100.0)
                 try session.setPreferredIOBufferDuration(data?.audioSessionPreferredIOBufferDuration ?? 0.005)
             }catch{
