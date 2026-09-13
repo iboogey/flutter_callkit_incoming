@@ -410,21 +410,29 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         // Guard against malformed UUID — see CallManager.swift:startCall for rationale.
         // PushKit branch reads uuid from self.data (stored during showCallkitIncoming);
         // non-PushKit reads from the incoming data. Either source can be invalid.
+        // The PushKit branch used to end `self.data` (the last call reported
+        // from a push) no matter which id the app passed, so ending one call
+        // after a push for another ended the wrong one. The app's id wins
+        // whenever it is a valid UUID; the stored one is only a fallback for
+        // callers that pass a placeholder.
         let uuidSourceString: String
-        if self.isFromPushKit {
-            guard let stored = self.data else {
-                NSLog("[CallkitIncoming] endCall: PushKit branch but self.data is nil — ignored")
-                return
-            }
-            uuidSourceString = stored.uuid
-            self.isFromPushKit = false
-            self.sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_ENDED, data.toJSON())
-        } else {
+        if UUID(uuidString: data.uuid) != nil {
             uuidSourceString = data.uuid
+        } else if let stored = self.data {
+            uuidSourceString = stored.uuid
+        } else {
+            NSLog("[CallkitIncoming] endCall: no usable UUID — ignored")
+            return
         }
         guard let uuid = UUID(uuidString: uuidSourceString) else {
             NSLog("[CallkitIncoming] endCall: invalid UUID '\(uuidSourceString)' — ignored")
             return
+        }
+        if self.isFromPushKit {
+            self.isFromPushKit = false
+            let known = self.callManager.callWithUUID(uuid: uuid)
+            self.sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_ENDED,
+                           eventPayload(for: uuid, call: known))
         }
         let call = Call(uuid: uuid, data: data)
 
@@ -434,17 +442,17 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     
     @objc public func connectedCall(_ data: Data) {
         // Guard against malformed UUID — see CallManager.swift:startCall for rationale.
+        // Same rule as endCall: the app's id wins when it is a valid UUID.
         let uuidSourceString: String
-        if self.isFromPushKit {
-            guard let stored = self.data else {
-                NSLog("[CallkitIncoming] connectedCall: PushKit branch but self.data is nil — ignored")
-                return
-            }
-            uuidSourceString = stored.uuid
-            self.isFromPushKit = false
-        } else {
+        if UUID(uuidString: data.uuid) != nil {
             uuidSourceString = data.uuid
+        } else if let stored = self.data {
+            uuidSourceString = stored.uuid
+        } else {
+            NSLog("[CallkitIncoming] connectedCall: no usable UUID — ignored")
+            return
         }
+        if self.isFromPushKit { self.isFromPushKit = false }
         guard let uuid = UUID(uuidString: uuidSourceString) else {
             NSLog("[CallkitIncoming] connectedCall: invalid UUID '\(uuidSourceString)' — ignored")
             return
@@ -710,8 +718,37 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
 //    }
     
     
+    /// The event payload for a call id, preferring the manager's record, then
+    /// the last reported `data` if it is the same call, else just the id.
+    /// Never the last reported call's data for a different id.
+    private func eventPayload(for uuid: UUID, call: Call?) -> [String: Any?] {
+        if let call = call { return call.data.toJSON() }
+        if let stored = self.data,
+           stored.uuid.lowercased() == uuid.uuidString.lowercased() {
+            return stored.toJSON()
+        }
+        return ["id": uuid.uuidString.lowercased()]
+    }
+
+    /// Forget `answerCall` / `outgoingCall` only when they ARE this call.
+    private func clearCallRefs(_ uuid: UUID) {
+        if self.answerCall?.uuid == uuid { self.answerCall = nil }
+        if self.outgoingCall?.uuid == uuid { self.outgoingCall = nil }
+    }
+
     public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        guard let call = self.callManager.callWithUUID(uuid: action.callUUID) else {
+        // Everything here is keyed on the call the action names. The previous
+        // code decided DECLINE vs ENDED from `answerCall == nil && outgoingCall
+        // == nil` and reported `self.data` (the LAST call reported to CallKit).
+        // On device: a live answered call A, a second push for call C (call
+        // waiting), user declines C -> answerCall was cleared although C was
+        // never the answered call; the user then ended A -> reported to the app
+        // as "C declined". The app ignored it, CallKit had ended A and shut the
+        // audio session, and A ran on with a dead microphone for 11 minutes.
+        let uuid = action.callUUID
+        let wasAnswered = self.answerCall?.uuid == uuid
+        let wasOutgoing = self.outgoingCall?.uuid == uuid
+        guard let call = self.callManager.callWithUUID(uuid: uuid) else {
             // The call is not in the manager. This happens when:
             //   1. iOS relaunched the (killed) app just to deliver this end action, or
             //   2. a programmatic endCall raced with the user-initiated CXEndCallAction
@@ -720,28 +757,31 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             // TIMEOUT) so the app can notify its backend and stop ringing elsewhere.
             // Fulfill (not fail) the action: failing a legitimate end action leaves
             // a stale call in the system UI.
-            if(self.answerCall == nil && self.outgoingCall == nil){
-                sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_DECLINE, self.data?.toJSON())
+            let payload = eventPayload(for: uuid, call: nil)
+            if wasAnswered || wasOutgoing {
+                sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_ENDED, payload)
             } else {
-                sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_ENDED, self.data?.toJSON())
+                sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_DECLINE, payload)
             }
+            clearCallRefs(uuid)
             action.fulfill()
             return
         }
         call.endCall()
         self.callManager.removeCall(call)
-        if (self.answerCall == nil && self.outgoingCall == nil) {
-            sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_DECLINE, self.data?.toJSON())
+        let payload = call.data.toJSON()
+        if wasAnswered || wasOutgoing || call.hasConnected {
+            clearCallRefs(uuid)
+            sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_ENDED, payload)
             if let appDelegate = UIApplication.shared.delegate as? CallkitIncomingAppDelegate {
-                appDelegate.onDecline(call, action)
+                appDelegate.onEnd(call, action)
             } else {
                 action.fulfill()
             }
-        }else {
-            self.answerCall = nil
-            sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_ENDED, call.data.toJSON())
+        } else {
+            sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_DECLINE, payload)
             if let appDelegate = UIApplication.shared.delegate as? CallkitIncomingAppDelegate {
-                appDelegate.onEnd(call, action)
+                appDelegate.onDecline(call, action)
             } else {
                 action.fulfill()
             }
