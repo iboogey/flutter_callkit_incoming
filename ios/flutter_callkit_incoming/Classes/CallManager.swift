@@ -74,9 +74,39 @@ class CallManager: NSObject {
     
     func connectedCall(call: Call) {
         let callItem = self.callWithUUID(uuid: call.uuid)
+
+        // Never re-answer an already-connected call. The CXAnswerCallAction
+        // requested below makes the plugin re-emit ACTION_CALL_ACCEPT to the
+        // app; if the app's accept handler calls setCallConnected again, that
+        // becomes an accept -> connect -> answer -> accept loop that freezes
+        // the call UI. Requesting another answer action for a connected call
+        // is never useful.
+        if callItem?.hasConnected == true {
+            print("connectedCall ignored: call already connected \(call.uuid.uuidString)")
+            return
+        }
+        // Setting hasConnected stamps connectedData, whose didSet fires
+        // hasConnectDidChange. The plugin wires that to
+        // provider.reportOutgoingCall(with:connectedAt:) when it creates the
+        // outgoing call, so this line alone is the complete, correct CallKit
+        // report that an outgoing call has connected.
         callItem?.connectedCall(completion: nil)
-        
-        let answerAction = CXAnswerCallAction(call: call.uuid)        
+
+        // An OUTGOING call must stop here. The CXAnswerCallAction below is how
+        // an INCOMING call gets answered; requesting one for a call the user
+        // placed is not just redundant, it is destructive. Its provider handler
+        // runs configureAudioSession() immediately and again 1200ms later, so
+        // the shared AVAudioSession is reconfigured -- and, when the app
+        // configured audioSessionActive false, DEACTIVATED -- on a call whose
+        // audio is already running and which nothing will reactivate, because
+        // CallKit activated that session back when the call started and will
+        // not do so again. The result is an outgoing call that connects and
+        // stays connected with no audio in either direction. It also makes the
+        // plugin emit a spurious ACTION_CALL_ACCEPT for a call that was never
+        // answered, which apps have to detect and discard.
+        guard callItem?.isOutGoing != true else { return }
+
+        let answerAction = CXAnswerCallAction(call: call.uuid)
         let transaction = CXTransaction(action: answerAction)
 
         callController.request(transaction) { error in
