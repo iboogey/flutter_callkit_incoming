@@ -959,17 +959,38 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
 
 class EventCallbackHandler: NSObject, FlutterStreamHandler {
     private var eventSink: FlutterEventSink?
-    
+
+    // Events sent while Dart is not listening. On a cold start from a VoIP
+    // push the user can answer or decline before Dart subscribes, and those
+    // events used to be dropped: CallKit showed a connected call the app
+    // never joined. They are queued here and delivered on the next listen.
+    // Bounded in count and age so a listener that comes back much later is
+    // not handed stale answers.
+    private var pending: [(at: Date, data: [String: Any])] = []
+    private static let maxPending = 32
+    private static let maxPendingAge: TimeInterval = 60
+
     public func send(_ event: String, _ body: Any) {
         let data: [String : Any] = [
             "event": event,
             "body": body
         ]
-        eventSink?(data)
+        if let sink = eventSink {
+            sink(data)
+            return
+        }
+        pending.append((at: Date(), data: data))
+        if pending.count > Self.maxPending {
+            pending.removeFirst(pending.count - Self.maxPending)
+        }
     }
-    
+
     func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
         self.eventSink = events
+        let now = Date()
+        let queued = pending.filter { now.timeIntervalSince($0.at) <= Self.maxPendingAge }
+        pending.removeAll()
+        queued.forEach { events($0.data) }
         return nil
     }
     
