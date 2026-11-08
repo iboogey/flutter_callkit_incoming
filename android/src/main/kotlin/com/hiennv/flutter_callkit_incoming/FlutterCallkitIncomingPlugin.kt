@@ -326,6 +326,11 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
                     result.success(true)
                 }
 
+                "updateCall" -> {
+                    // CallKit only (iOS); Android has nothing to update.
+                    result.success(true)
+                }
+
                 "isMuted" -> {
                     result.success(true)
                 }

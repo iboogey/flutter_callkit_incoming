@@ -163,6 +163,20 @@ class FlutterCallkitIncoming {
     await _channel.invokeMethod("holdCall", {'id': id, 'isOnHold': isOnHold});
   }
 
+  /// Update a call CallKit already shows. Only the given fields change.
+  /// On iOS, reports a CXCallUpdate for the call — e.g. one reported from a
+  /// VoIP push before the app could decrypt it, which iOS will not accept a
+  /// second showCallkitIncoming for (the UUID already exists).
+  /// On Android, Nothing.
+  static Future<void> updateCall(String id,
+      {bool? hasVideo, String? nameCaller}) async {
+    await _channel.invokeMethod("updateCall", {
+      'id': id,
+      if (hasVideo != null) 'hasVideo': hasVideo,
+      if (nameCaller != null) 'nameCaller': nameCaller,
+    });
+  }
+
   /// End an Incoming/Outgoing call.
   /// On iOS, using Callkit(update a history into the Phone app).
   /// On Android, Nothing(only callback event listener).

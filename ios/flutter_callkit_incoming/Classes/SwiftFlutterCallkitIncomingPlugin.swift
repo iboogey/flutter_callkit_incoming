@@ -153,6 +153,24 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             self.muteCall(callId, isMuted: isMuted)
             result(true)
             break
+        case "updateCall":
+            // A CXCallUpdate only changes the properties that are set on it.
+            guard let args = call.arguments as? [String: Any],
+                  let callId = args["id"] as? String,
+                  let uuid = UUID(uuidString: callId) else {
+                result(false)
+                return
+            }
+            let callUpdate = CXCallUpdate()
+            if let hasVideo = args["hasVideo"] as? Bool {
+                callUpdate.hasVideo = hasVideo
+            }
+            if let nameCaller = args["nameCaller"] as? String, !nameCaller.isEmpty {
+                callUpdate.localizedCallerName = nameCaller
+            }
+            self.sharedProvider?.reportCall(with: uuid, updated: callUpdate)
+            result(self.sharedProvider != nil)
+            break
         case "isMuted":
             guard let args = call.arguments as? [String: Any] ,
                   let callId = args["id"] as? String else{
