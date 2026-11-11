@@ -133,7 +133,18 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
                 return
             }
             if(self.isFromPushKit){
-                self.endCall(self.data!)
+                // Replace/glare ends an OLDER call while a newer pushed ring
+                // (self.data) is showing. A valid id for a different call is
+                // honoured without touching the stored pushed call, its flag
+                // or its events. Same / missing / invalid id: as before.
+                if let getArgs = args as? [String: Any],
+                   let id = getArgs["id"] as? String,
+                   UUID(uuidString: id) != nil,
+                   !self.isStoredPushedCall(id) {
+                    self.endCall(Data(args: getArgs))
+                } else {
+                    self.endCall(self.data!)
+                }
             }else{
                 if let getArgs = args as? [String: Any] {
                     self.data = Data(args: getArgs)
@@ -200,7 +211,17 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
                 return
             }
             if(self.isFromPushKit){
-                self.connectedCall(self.data!)
+                // Same rule as endCall: connecting a different call than the
+                // pushed one must not consume the pushed call's state.
+                if let getArgs = args as? [String: Any],
+                   let id = getArgs["id"] as? String,
+                   let otherUuid = UUID(uuidString: id),
+                   !self.isStoredPushedCall(id) {
+                    let known = self.callManager.callWithUUID(uuid: otherUuid)
+                    self.connectedCall(known?.data ?? Data(args: getArgs))
+                } else {
+                    self.connectedCall(self.data!)
+                }
             }else{
                     if let getArgs = args as? [String: Any] {
                     // `setCallConnected(id)` sends only `{'id': id}`, so
@@ -434,6 +455,14 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         }
     }
     
+    /// True when `id` is the call stored from the last push (`self.data`),
+    /// compared case-insensitively. With nothing stored, treated as a match
+    /// so behaviour stays what it was.
+    private func isStoredPushedCall(_ id: String) -> Bool {
+        guard let stored = self.data else { return true }
+        return stored.uuid.caseInsensitiveCompare(id) == .orderedSame
+    }
+
     @objc public func endCall(_ data: Data) {
         // Guard against malformed UUID — see CallManager.swift:startCall for rationale.
         // PushKit branch reads uuid from self.data (stored during showCallkitIncoming);
@@ -456,7 +485,9 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             NSLog("[CallkitIncoming] endCall: invalid UUID '\(uuidSourceString)' — ignored")
             return
         }
-        if self.isFromPushKit {
+        // The push-only ENDED event and the flag belong to the pushed call
+        // (self.data) only; ending another call must leave them alone.
+        if self.isFromPushKit && self.isStoredPushedCall(uuidSourceString) {
             self.isFromPushKit = false
             let known = self.callManager.callWithUUID(uuid: uuid)
             self.sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_ENDED,
@@ -480,7 +511,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             NSLog("[CallkitIncoming] connectedCall: no usable UUID — ignored")
             return
         }
-        if self.isFromPushKit { self.isFromPushKit = false }
+        if self.isFromPushKit && self.isStoredPushedCall(uuidSourceString) { self.isFromPushKit = false }
         guard let uuid = UUID(uuidString: uuidSourceString) else {
             NSLog("[CallkitIncoming] connectedCall: invalid UUID '\(uuidSourceString)' — ignored")
             return
